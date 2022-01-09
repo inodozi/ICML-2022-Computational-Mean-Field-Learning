@@ -1,5 +1,7 @@
 def Drift():
 
+
+    # the feature and the labels
     x_torch = torch.tensor(x)
     y_torch = torch.tensor(y)
 
@@ -23,6 +25,7 @@ def Drift():
 
     Phi=(np.tanh(np.matmul(theta_prev[:,2:],np.transpose(x))+theta_prev[:,1].reshape(nSample,1)))*(theta_prev[:,0].reshape(nSample,1))
     driftk = np.hstack((-a.grad.numpy(),-b.grad.numpy(),-w.grad.numpy()))
+    # np.savetxt('driftk.dat', driftk)
     return driftk, Phi
 
 #####################################################################################################################
@@ -52,6 +55,7 @@ def FixedPointIteration():
 
     l=0
     while l < maxiter-1:
+        # if l>1:
         z[:,l+1]=np.power(xi/(np.matmul(gamma.transpose(),yy[:,l].reshape(nSample,1))),1/(1+(beta*epsilon/h)))[:,0]
         yy[:,l+1]=(rho_prev/(np.matmul(gamma,z[:, l+1].reshape(nSample,1))))[:,0]
         if ((LA.norm(yy[:, l+1]-yy[:, l]) < tol) and (LA.norm(z[:, l+1]-z[:, l]) < tol)):
@@ -115,6 +119,9 @@ x=data[:,2:]
 
 nx = len(x[0]) #dimension of the feature vector
 
+# for i in range(nx):
+#     x[:,i]=(x[:,i]-min(x[:,i]))/(max(x[:,i])-min(x[:,i]))
+
 
 #  binary label vector
 labels_test =test_data[:,1].reshape(nData_test,1)
@@ -127,6 +134,8 @@ x_test=test_data[:,2:]
 
 nx_test = len(x_test[0]) #dimension of the feature vector
 
+# for i in range(nx_test):
+#     x_test[:,i]=(x_test[:,i]-min(x_test[:,i]))/(max(x_test[:,i])-min(x_test[:,i]))
 
 
 ##Simulation parameters
@@ -150,10 +159,11 @@ b_min, b_max=-0.1, 0.1; # min-max bias
 w_min, w_max=-1, 1;
 numRandomRun=1 # 50
 
+Risk_test=np.zeros((numSteps)).reshape(numSteps,1)
+Risk_weight_hard_test=np.zeros((numSteps)).reshape(numSteps,1)
 
-
-Risk_estimate1=np.zeros((numSteps)).reshape(numSteps,1)
-Risk_estimate2=np.zeros((numSteps)).reshape(numSteps,1)
+Risk=np.zeros((numSteps)).reshape(numSteps,1)
+Risk_weight_hard=np.zeros((numSteps)).reshape(numSteps,1)
 
 comptime=np.zeros((numRandomRun,1))
 F0=np.sum(y**2)/nData
@@ -177,20 +187,37 @@ for r in range(numRandomRun):
     #     preallocate
     theta_prev=theta0
     rho_prev = rho0
-    
-    
-    tol_Risk_estimate1=1e-3 # numbers coloser than this number to zero and one 
-                  # in the Risk_estimate1 and f_hat_estimate1 will be considered as zero and one, respectively.
 
-    f_hat_estimate2=np.zeros((nData)).reshape(nData,1)
-    f_hat_estimate1=np.random.rand((nData)).reshape(nData,1)
+
+    # theta_prev = np.genfromtxt('theta_prev.dat ')
+    # rho_prev = np.genfromtxt('rho_prev.dat').reshape(nSample,1)
+
+    
+    
+    tol_risk=1e-3 # numbers coloser than this number to zero and one 
+                  # in the f_hat_weight_soft and f_hat_soft will be considered as zero and one, respectively.
+    f_hat_weight_hard_test=np.zeros((nData_test)).reshape(nData_test,1)
+    f_hat_soft_test=np.random.rand((nData_test)).reshape(nData_test,1)
+
+    f_hat_weight_hard=np.zeros((nData)).reshape(nData,1)
+    f_hat_soft=np.random.rand((nData)).reshape(nData,1)
 
     tic()
+    accuracy_test=np.zeros((11)).reshape(11,1)
+    accuracy_weight_hard_test=np.zeros((11)).reshape(11,1)
+    q=0 # index that will be used for saving 10 accuracy durring the simulation
+
     #
     for k in range(numSteps):
         if (k%5e3 == 0):
             print("Now, running iterations between k=",k+1,"and k=", k+int(5e3))
-            print("And, the Risk_estimate1 value at iteration #",k, "was:",Risk_estimate1[k-1])
+            print("And, the Risk value at iteration #",k, "was:",Risk_test[k-1])
+        if (k%1e5 == 0):
+            np.savetxt('theta'+str(k)+'.dat', theta_prev)
+            np.savetxt('rho'+str(k)+'.dat', rho_prev)
+            accuracy_test[q]=(1/nData_test)*np.sum(f_hat_soft_test == labels_test)
+            accuracy_weight_hard_test[q]=(1/nData_test)*np.sum(f_hat_weight_hard_test == labels_test)
+            q=q+1
         driftk, Phi=Drift()
         #        update of the parameter samples
         theta_current=EulerMaruyama_MeanField()
@@ -198,29 +225,55 @@ for r in range(numRandomRun):
         rho_next, V_prev, U_prev=FixedPointIteration()
         theta_prev=theta_current
         rho_prev=rho_next
+        #       estimate risk functional for test data
+        Phi_test=(np.tanh(np.matmul(theta_prev[:,2:],np.transpose(x_test))+theta_prev[:,1].reshape(nSample,1)))*(theta_prev[:,0].reshape(nSample,1))
+        f_hat_test=Phi_test.transpose().sum(axis=1).reshape(nData_test,1)/nSample
+        f_hat_soft_test=(np.exp(f_hat_test))/(1+np.exp(f_hat_test))
+        ## computing the risk function with weighted f_hat for test data
+        f_hat_weight_test=np.matmul(Phi_test.transpose(),rho_prev)  
+        for i in range(nData_test):#pulishing f_hat_soft and f_hat_weight_soft around zero and 1 and make them exactly zero and one for test data
+            if f_hat_soft_test[i]>1-tol_risk:
+                f_hat_soft_test[i]=1
+            if f_hat_soft_test[i]<tol_risk:
+                f_hat_soft_test[i]=0
+            if f_hat_weight_test[i]>0:
+                f_hat_weight_hard_test[i]=1
+            if f_hat_weight_test[i]<0:
+                f_hat_weight_hard_test[i]=0
+        Risk_test[k]=(0.5/nData_test)*LA.norm(labels_test-f_hat_soft_test)
+        Risk_weight_hard_test[k]=(0.5/nData_test)*LA.norm(labels_test-f_hat_weight_hard_test)
 
         f_hat=Phi.transpose().sum(axis=1).reshape(nData,1)/nSample
-        f_hat_estimate1=(np.exp(f_hat))/(1+np.exp(f_hat))
-        ## computing the Risk_estimate1 function with weighted f_hat for test data
+        f_hat_soft=(np.exp(f_hat))/(1+np.exp(f_hat))
+        ## computing the risk function with weighted f_hat for test data
         f_hat_weight=np.matmul(Phi.transpose(),rho_prev)  
-        for i in range(nData):#pulishing f_hat_estimate1 and Risk_estimate1 around zero and 1 and make them exactly zero and one
-            if f_hat_estimate1[i]>1-tol_Risk_estimate1:
-                f_hat_estimate1[i]=1
-            if f_hat_estimate1[i]<tol_Risk_estimate1:
-                f_hat_estimate1[i]=0
+        for i in range(nData):#pulishing f_hat_soft and f_hat_weight_soft around zero and 1 and make them exactly zero and one for test data
+            if f_hat_soft[i]>1-tol_risk:
+                f_hat_soft[i]=1
+            if f_hat_soft[i]<tol_risk:
+                f_hat_soft[i]=0
             if f_hat_weight[i]>0:
-                f_hat_estimate2[i]=1
+                f_hat_weight_hard[i]=1
             if f_hat_weight[i]<0:
-                f_hat_estimate2[i]=0
-        Risk_estimate1[k]=(0.5/nData)*LA.norm(labels-f_hat_estimate1)
-        Risk_estimate2[k]=(0.5/nData)*LA.norm(labels-f_hat_estimate2)
+                f_hat_weight_hard[i]=0
+        Risk[k]=(0.5/nData)*LA.norm(labels-f_hat_soft)
+        Risk_weight_hard[k]=(0.5/nData)*LA.norm(labels-f_hat_weight_hard)
+        if np.isnan(rho_next[0,0]):
+            print("The code stoped after k=",k,"iterations, because of RuntimeWarning.")
+            break
     comptime[r]=toc()
 print("Computation time: "+str(comptime))
+np.savetxt('Risk_test '+'beta='+str(beta)+'.dat', Risk_test)
+np.savetxt('Risk_weight_hard_test '+'beta='+str(beta)+'.dat', Risk_weight_hard_test)
 
-np.savetxt('Risk_estimate1 '+'beta='+str(beta)+'.dat', Risk_estimate1)
-np.savetxt('Risk_estimate2 '+'beta='+str(beta)+'.dat', Risk_estimate2)
+
+np.savetxt('Risk '+'beta='+str(beta)+'.dat', Risk)
+np.savetxt('Risk_weight_hard '+'beta='+str(beta)+'.dat', Risk_weight_hard)
+
+
 
 np.savetxt('theta'+str(numSteps)+'.dat', theta_prev)
 np.savetxt('rho'+str(numSteps)+'.dat', rho_prev)
+
 
 
